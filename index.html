@@ -268,9 +268,16 @@ a full cosine bell (100%).
 
 <h3 class="chart-title">Daily intake pace</h3>
 <div class="summary" id="paceSummary"></div>
-<div class="summary">Cumulative milk by time of day: each grey line is a past day, the dark line the usual (median), blue is today.</div>
+<div class="summary">Cumulative milk by time of day: each grey line is a past day, the dark line the usual (median), blue is today. Click a day to highlight it.</div>
 <div class="chart-container">
     <canvas id="paceChart"></canvas>
+</div>
+
+<h3 class="chart-title">Daily pumping pace</h3>
+<div class="summary" id="pumpPaceSummary"></div>
+<div class="summary">The same view for pumping output: cumulative ml pumped by time of day, with today in purple.</div>
+<div class="chart-container">
+    <canvas id="pumpPaceChart"></canvas>
 </div>
 
 <div class="controls">
@@ -584,7 +591,6 @@ const feedSummary = document.getElementById("feedSummary");
 const pumpSummary = document.getElementById("pumpSummary");
 const diaperSummary = document.getElementById("diaperSummary");
 const weightSummary = document.getElementById("weightSummary");
-const paceSummary = document.getElementById("paceSummary");
 const dayStartSlider = document.getElementById("dayStartSlider");
 const dayStartValue = document.getElementById("dayStartValue");
 const anomaliesEl = document.getElementById("anomalies");
@@ -659,7 +665,6 @@ let feedChart = null;
 let pumpChart = null;
 let diaperChart = null;
 let weightChart = null;
-let paceChart = null;    // cumulative intake by time of day (own hour-of-day axis)
 let gapChart = null;      // gap-between-feeds over time (shares the time axis)
 let gapHistChart = null;  // gap-duration histogram (own bin axis)
 let gapVolChart = null;   // feed volume vs. preceding gap (own axes)
@@ -671,7 +676,22 @@ let pumpEvents = [];
 let diaperEvents = [];
 let weightEvents = [];
 let gapEvents = []; // { time, hours, ml } spacing before each feed
-let selectedPaceDay = null; // day key highlighted in the pace chart, or null
+
+// The pace charts (cumulative by time of day, on their own hour-of-day axis).
+// Both work identically; only the data, colour and wording differ. `chart` and
+// `summary` are filled in on first render, `selected` holds the highlighted day.
+const PACE_VIEWS = [
+    {
+        canvasId: "paceChart", summaryId: "paceSummary", color: "#2680eb",
+        yTitle: "Cumulative milk (ml)", verb: "consumed",
+        events: () => feedEvents, chart: null, summary: null, selected: null,
+    },
+    {
+        canvasId: "pumpPaceChart", summaryId: "pumpPaceSummary", color: "#9256d9",
+        yTitle: "Cumulative pumped (ml)", verb: "pumped",
+        events: () => pumpEvents, chart: null, summary: null, selected: null,
+    },
+];
 
 // The shared visible time window. `extent` is the full data range (both
 // charts); `view` is the current zoom/pan window, or null when fully zoomed out.
@@ -1106,16 +1126,16 @@ function dayStartOf(date, startHour) {
     return d.getTime();
 }
 
-// Cumulative-intake-by-time-of-day chart: one grey curve per past day, a bold
-// median ("usual day"), and today's running total highlighted -- so at the
-// current time you can see whether today is ahead of or behind a usual day.
-// History = whole days covered by data within the window; today = the most
-// recent day (its curve may be partial).
-function updatePaceChart(min, max) {
-    const inWin = feedEvents.filter(inRange(min, max)); // volume feeds only
+// Cumulative-by-time-of-day chart: one grey curve per past day, a bold median
+// ("usual day"), and today's running total highlighted -- so at the current time
+// you can see whether today is ahead of or behind a usual day. Drives both the
+// intake and the pumping pace charts via the PACE_VIEWS config. History = whole
+// days covered by data within the window; today = the most recent day (its curve
+// may be partial).
+function updatePaceChart(view, min, max) {
+    const inWin = view.events().filter(inRange(min, max));
 
     const startHour = dayStartHour();
-    dayStartValue.textContent = formatHourLabel(startHour);
 
     const byDay = new Map();
     for (const e of inWin) {
@@ -1177,7 +1197,7 @@ function updatePaceChart(min, max) {
     let selected = null;
     for (const c of history) {
         const data = [...c.pts, { x: 24, y: c.total }];
-        if (c.key === selectedPaceDay) {
+        if (c.key === view.selected) {
             selected = { curve: c, ds: line(data, "#e8703a", 2.5,
                 { label: formatDate(new Date(c.key)), stepped: true, pointRadius: 2, dayKey: c.key }) };
         } else {
@@ -1193,19 +1213,19 @@ function updatePaceChart(min, max) {
     const nowKey = dayStartOf(now, startHour);
     const isCurrentDay = !!today && today.key === nowKey;
     if (today) {
-        datasets.push(line(today.pts, "#2680eb", 3, {
+        datasets.push(line(today.pts, view.color, 3, {
             label: isCurrentDay ? "Today" : formatDate(new Date(today.key)),
             stepped: true, pointRadius: 3,
         }));
     }
-    paceChart.data.datasets = datasets;
-    paceChart.update("none");
+    view.chart.data.datasets = datasets;
+    view.chart.update("none");
 
     // What to expect right now, always measured at the current wall clock time:
     // by this hour of the day, a usual day has reached the median below. Today's
     // running total is compared against it when the log actually covers today.
     if (!history.length) {
-        paceSummary.textContent = "Not enough history in view to project a usual day.";
+        view.summary.textContent = "Not enough history in view to project a usual day.";
         return;
     }
     const atNow = Math.min(24, (now.getTime() - nowKey) / (60 * 60 * 1000));
@@ -1213,7 +1233,7 @@ function updatePaceChart(min, max) {
     const usual = percentile(history.map(c => cumAt(c, atNow)).sort((a, b) => a - b), 50);
     const days = `${history.length} day${history.length === 1 ? "" : "s"}`;
 
-    let text = `As of ${clock}, the current time, the median consumed is ` +
+    let text = `As of ${clock}, the current time, the median ${view.verb} is ` +
         `${formatMl(usual)} (${days} of history).`;
     if (isCurrentDay) {
         const soFar = cumAt(today, atNow);
@@ -1224,9 +1244,9 @@ function updatePaceChart(min, max) {
     } else {
         text += " Nothing logged yet today.";
     }
-    paceSummary.textContent = text;
+    view.summary.textContent = text;
     if (selected) {
-        paceSummary.textContent +=
+        view.summary.textContent +=
             ` Highlighted ${formatDate(new Date(selected.curve.key))}: ${Math.round(selected.curve.total)} ml.`;
     }
 }
@@ -1239,7 +1259,8 @@ function updateSummaries() {
     renderDiaperStats(min, max);
     updateWeightSummary(min, max);
     updateGapCharts(min, max);
-    updatePaceChart(min, max);
+    dayStartValue.textContent = formatHourLabel(dayStartHour());
+    for (const paceView of PACE_VIEWS) updatePaceChart(paceView, min, max);
 }
 
 // Weight (grams) at an arbitrary time, linearly interpolated between the two
@@ -1415,42 +1436,46 @@ function render() {
                 tooltipLabel: ctx => `${ctx.parsed.y.toFixed(2)} kg · ${gramsToLbOz(ctx.parsed.y * 1000)}`,
             }),
         });
-        const paceOptions = chartOptions("Cumulative milk (ml)", {
-            xType: "linear", xTitle: "Time of day",
-            tooltipLabel: ctx => `${ctx.dataset.label}: ${Math.round(ctx.parsed.y)} ml`,
-        });
-        paceOptions.scales.x.min = 0;
-        paceOptions.scales.x.max = 24;
-        // x is hours since the day start, so ticks label the real clock time.
-        paceOptions.scales.x.ticks = {
-            stepSize: 3, callback: v => formatHourTick(v + dayStartHour()),
-        };
-        // Legend shows the median, today, and (when one is clicked) the
-        // highlighted day by date -- but not every anonymous grey past day.
-        paceOptions.plugins.legend = {
-            labels: { filter: item => item.text !== "Past days" },
-        };
-        // Title the tooltip with the wall clock time rather than the raw
-        // hours-since-day-start that the x value holds.
-        paceOptions.plugins.tooltip.callbacks.title =
-            items => (items.length ? formatClockFromDayStart(items[0].parsed.x) : "");
-        // Click a day's line to highlight it (click again to clear).
-        paceOptions.onClick = (evt, els, chart) => {
-            const hit = chart.getElementsAtEventForMode(evt, "nearest", { intersect: false }, true);
-            const ds = hit.length ? chart.data.datasets[hit[0].datasetIndex] : null;
-            if (!ds || ds.dayKey == null) return; // ignore clicks on median/today
-            selectedPaceDay = selectedPaceDay === ds.dayKey ? null : ds.dayKey;
-            const { min, max } = view ?? extent;
-            updatePaceChart(min, max);
-        };
-        paceOptions.onHover = (evt, els, chart) => {
-            const hit = chart.getElementsAtEventForMode(evt, "nearest", { intersect: false }, true);
-            const overDay = hit.length && chart.data.datasets[hit[0].datasetIndex].dayKey != null;
-            chart.canvas.style.cursor = overDay ? "pointer" : "default";
-        };
-        paceChart = new Chart(document.getElementById("paceChart"), {
-            type: "line", data: { datasets: [] }, options: paceOptions,
-        });
+        // Both pace charts are built identically from their PACE_VIEWS config.
+        for (const paceView of PACE_VIEWS) {
+            const paceOptions = chartOptions(paceView.yTitle, {
+                xType: "linear", xTitle: "Time of day",
+                tooltipLabel: ctx => `${ctx.dataset.label}: ${Math.round(ctx.parsed.y)} ml`,
+            });
+            paceOptions.scales.x.min = 0;
+            paceOptions.scales.x.max = 24;
+            // x is hours since the day start, so ticks label the real clock time.
+            paceOptions.scales.x.ticks = {
+                stepSize: 3, callback: v => formatHourTick(v + dayStartHour()),
+            };
+            // Legend shows the median, today, and (when one is clicked) the
+            // highlighted day by date -- but not every anonymous grey past day.
+            paceOptions.plugins.legend = {
+                labels: { filter: item => item.text !== "Past days" },
+            };
+            // Title the tooltip with the wall clock time rather than the raw
+            // hours-since-day-start that the x value holds.
+            paceOptions.plugins.tooltip.callbacks.title =
+                items => (items.length ? formatClockFromDayStart(items[0].parsed.x) : "");
+            // Click a day's line to highlight it (click again to clear).
+            paceOptions.onClick = (evt, els, chart) => {
+                const hit = chart.getElementsAtEventForMode(evt, "nearest", { intersect: false }, true);
+                const ds = hit.length ? chart.data.datasets[hit[0].datasetIndex] : null;
+                if (!ds || ds.dayKey == null) return; // ignore clicks on median/today
+                paceView.selected = paceView.selected === ds.dayKey ? null : ds.dayKey;
+                const { min, max } = view ?? extent;
+                updatePaceChart(paceView, min, max);
+            };
+            paceOptions.onHover = (evt, els, chart) => {
+                const hit = chart.getElementsAtEventForMode(evt, "nearest", { intersect: false }, true);
+                const overDay = hit.length && chart.data.datasets[hit[0].datasetIndex].dayKey != null;
+                chart.canvas.style.cursor = overDay ? "pointer" : "default";
+            };
+            paceView.summary = document.getElementById(paceView.summaryId);
+            paceView.chart = new Chart(document.getElementById(paceView.canvasId), {
+                type: "line", data: { datasets: [] }, options: paceOptions,
+            });
+        }
         gapChart = new Chart(document.getElementById("gapChart"), {
             type: "line",
             plugins: [nightShadingPlugin],
@@ -1803,7 +1828,7 @@ clearSavedButton.addEventListener("click", () => {
 // refresh all the summaries. Shifting it re-keys every day, so any highlighted
 // day is cleared rather than left pointing at a stale key.
 dayStartSlider.addEventListener("input", () => {
-    selectedPaceDay = null;
+    for (const paceView of PACE_VIEWS) paceView.selected = null;
     updateSummaries();
 });
 
