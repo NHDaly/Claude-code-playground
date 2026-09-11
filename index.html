@@ -1646,11 +1646,73 @@ function setDefaultZoom() {
     updateCursor();
 }
 
-// Load fresh data: redraw, then reset to the default zoom window.
+// --- Sharing the zoom window in the URL ----------------------------------
+
+// The visible window travels in ?z=<startSec>-<endSec> (or "full" when zoomed
+// all the way out), so a link shows the recipient the same range. Written only
+// once the zoom is actually changed, so a plain link still opens on the latest
+// data rather than a window frozen at whatever was shared.
+function readZoomParam() {
+    const z = new URLSearchParams(location.search).get("z");
+    if (!z) return null;
+    if (z === "full") return "full";
+
+    const match = z.match(/^(\d+)-(\d+)$/);
+    if (!match) return null;
+    const min = Number(match[1]) * 1000, max = Number(match[2]) * 1000;
+    return max > min ? { min, max } : null;
+}
+
+// Restore a shared window, clamped into the data actually loaded so a link
+// still lands somewhere sensible if the log has moved on since.
+function applySharedZoom(shared) {
+    const full = fullWidthMs();
+    const zoomOut = () => { view = null; zoomSlider.value = "0"; };
+
+    if (shared === "full" || full <= 0) {
+        zoomOut();
+    } else {
+        const width = clamp(shared.max - shared.min, Math.min(MIN_WINDOW_MS, full), full);
+        if (width >= full) {
+            zoomOut();
+        } else {
+            const min = clamp(shared.min, extent.min, extent.max - width);
+            view = { min, max: min + width };
+            zoomSlider.value = String(tForWindow(width));
+        }
+    }
+    updateCursor();
+}
+
+let pendingSharedZoom = readZoomParam();
+
+// Panning fires continuously, so coalesce the writes; replaceState keeps the
+// back button usable. Guarded because some contexts refuse history writes.
+let zoomUrlTimer = null;
+function syncZoomToUrl() {
+    clearTimeout(zoomUrlTimer);
+    zoomUrlTimer = setTimeout(() => {
+        const params = new URLSearchParams(location.search);
+        params.set("z", view
+            ? `${Math.round(view.min / 1000)}-${Math.round(view.max / 1000)}`
+            : "full");
+        try {
+            history.replaceState(null, "", `${location.pathname}?${params}${location.hash}`);
+        } catch { /* history writes can be blocked; the chart is unaffected */ }
+    }, 250);
+}
+
+// Load fresh data: redraw, then apply a shared window if one came in on the
+// URL (once only -- switching datasets afterwards goes back to the default).
 function loadData() {
     view = null; // avoid briefly drawing a stale window
     render();
-    setDefaultZoom();
+    if (pendingSharedZoom) {
+        applySharedZoom(pendingSharedZoom);
+        pendingSharedZoom = null;
+    } else {
+        setDefaultZoom();
+    }
     applyView();
 }
 
@@ -1675,6 +1737,7 @@ function enablePan(chart) {
         panBy(-(e.clientX - lastX) * msPerPixel());
         lastX = e.clientX;
         applyView();
+        syncZoomToUrl();
     });
     const endDrag = () => { lastX = null; updateCursor(); };
     canvas.addEventListener("pointerup", endDrag);
@@ -1685,6 +1748,7 @@ function enablePan(chart) {
         e.preventDefault();
         panBy((e.deltaX || e.deltaY) * msPerPixel());
         applyView();
+        syncZoomToUrl();
     }, { passive: false });
 }
 
@@ -1864,8 +1928,8 @@ dayStartSlider.addEventListener("input", () => {
     updateSummaries();
 });
 
-zoomSlider.addEventListener("input", () => { zoomTo(Number(zoomSlider.value)); applyView(); });
-document.getElementById("resetZoom").addEventListener("click", () => { resetZoom(); applyView(); });
+zoomSlider.addEventListener("input", () => { zoomTo(Number(zoomSlider.value)); applyView(); syncZoomToUrl(); });
+document.getElementById("resetZoom").addEventListener("click", () => { resetZoom(); applyView(); syncZoomToUrl(); });
 
 // Give every section heading a stable id and turn it into a link to itself, so
 // a particular chart can be linked to directly. Done here rather than in the
