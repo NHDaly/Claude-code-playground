@@ -77,6 +77,38 @@ body {
     font-size: 1.05rem;
 }
 
+/* Section headings link to themselves, with a "#" that appears on hover. */
+h2 a,
+.chart-title a {
+    color: inherit;
+    text-decoration: none;
+}
+
+h2 a:hover,
+.chart-title a:hover {
+    text-decoration: underline;
+}
+
+h2 a::after,
+.chart-title a::after {
+    content: " #";
+    color: #bbb;
+    font-weight: 400;
+    opacity: 0;
+}
+
+h2 a:hover::after,
+h2 a:focus::after,
+.chart-title a:hover::after,
+.chart-title a:focus::after {
+    opacity: 1;
+}
+
+h2[id],
+.chart-title[id] {
+    scroll-margin-top: 0.75rem;
+}
+
 .summary {
     font-size: 0.9rem;
     color: #444;
@@ -1835,6 +1867,38 @@ dayStartSlider.addEventListener("input", () => {
 zoomSlider.addEventListener("input", () => { zoomTo(Number(zoomSlider.value)); applyView(); });
 document.getElementById("resetZoom").addEventListener("click", () => { resetZoom(); applyView(); });
 
+// Give every section heading a stable id and turn it into a link to itself, so
+// a particular chart can be linked to directly. Done here rather than in the
+// markup so any heading added later is covered automatically.
+function linkifyHeadings() {
+    const slugify = text => text.toLowerCase().trim()
+        .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+
+    const used = new Set();
+    for (const heading of document.querySelectorAll("h2, h3.chart-title")) {
+        let id = heading.id || slugify(heading.textContent);
+        if (!id) continue;
+        for (let n = 2; used.has(id); n++) id = `${slugify(heading.textContent)}-${n}`;
+        used.add(id);
+        heading.id = id;
+
+        const link = document.createElement("a");
+        link.href = `#${id}`;
+        link.append(...heading.childNodes);
+        heading.append(link);
+    }
+}
+
+// Honour a hash the browser could not resolve while parsing, because the ids
+// did not exist yet. Must run after the charts are laid out, or the sections
+// below shift down and the scroll lands short.
+function scrollToHash() {
+    if (location.hash.length <= 1) return;
+    document.getElementById(decodeURIComponent(location.hash.slice(1)))?.scrollIntoView();
+}
+
+linkifyHeadings();
+
 // Prefer the file saved on a previous visit; otherwise start on a sample.
 const savedUpload = loadSavedUpload();
 if (savedUpload) {
@@ -1846,6 +1910,8 @@ if (savedUpload) {
     showSavedState(null);
 }
 loadData();
+scrollToHash();
+window.addEventListener("load", scrollToHash); // once canvases have settled
 </script>
 
 </body>
